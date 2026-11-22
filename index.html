@@ -32,40 +32,46 @@
         </button>
       </header>
 
-      <!-- Card 1: Rectangular Board Dimensions -->
+      <!-- Card 1: Board Shape & Dimensions -->
       <section class="card">
         <div class="card-head">
           <div>
-            <h2>1. Obszar podkładki (prostokąt)</h2>
-            <p class="muted">Wybierz rozmiar w koralikach (szer. × wys.)</p>
+            <h2>1. Kształt i obszar podkładki</h2>
+            <p class="muted">Wybierz kształt formy oraz rozmiar w koralikach</p>
           </div>
-          <div class="ratio-preview-box" title="Proporcje podkładki">
-            <div id="ratioPreviewRect" class="ratio-rect"></div>
-          </div>
+          <canvas id="shapePreviewCanvas" width="46" height="46" class="ratio-preview-canvas" title="Podgląd kształtu podkładki"></canvas>
+        </div>
+
+        <div class="shape-grid" id="boardShapes">
+          <button type="button" class="shape-btn active" data-shape="rect">▭ Prostokąt</button>
+          <button type="button" class="shape-btn" data-shape="circle">◯ Koło</button>
+          <button type="button" class="shape-btn" data-shape="heart">♥ Serce</button>
+          <button type="button" class="shape-btn" data-shape="star">★ Gwiazda</button>
+          <button type="button" class="shape-btn" data-shape="hex">⬡ Sześciokąt</button>
+          <button type="button" class="shape-btn" data-shape="oval">⬭ Owal</button>
         </div>
 
         <div class="chip-grid" id="boardPresets">
           <button type="button" class="chip" data-w="5" data-h="5">5 × 5</button>
           <button type="button" class="chip" data-w="10" data-h="15">10 × 15</button>
           <button type="button" class="chip active" data-w="15" data-h="15">15 × 15</button>
-          <button type="button" class="chip" data-w="15" data-h="20">15 × 20</button>
-          <button type="button" class="chip" data-w="20" data-h="20">20 × 20</button>
+          <button type="button" class="chip" data-w="21" data-h="21">21 × 21</button>
           <button type="button" class="chip" data-w="29" data-h="29">29 × 29</button>
         </div>
 
         <div class="stepper-block">
           <div class="stepper-row">
-            <label for="widthSlider">Szerokość</label>
+            <label id="widthSliderLabel" for="widthSlider">Szerokość</label>
             <div class="stepper-controls">
               <button type="button" class="icon-btn" id="widthMinus" aria-label="Zmniejsz szerokość">−</button>
               <span id="widthValue" class="mono-val">15</span>
               <button type="button" class="icon-btn" id="widthPlus" aria-label="Zwiększ szerokość">+</button>
             </div>
           </div>
-          <input id="widthSlider" type="range" min="3" max="60" value="15" />
+          <input id="widthSlider" type="range" min="5" max="60" value="15" />
         </div>
 
-        <div class="stepper-block">
+        <div id="heightBlock" class="stepper-block">
           <div class="stepper-row">
             <label for="heightSlider">Wysokość</label>
             <div class="stepper-controls">
@@ -74,19 +80,20 @@
               <button type="button" class="icon-btn" id="heightPlus" aria-label="Zwiększ wysokość">+</button>
             </div>
           </div>
-          <input id="heightSlider" type="range" min="3" max="60" value="15" />
+          <input id="heightSlider" type="range" min="5" max="60" value="15" />
         </div>
 
         <div class="row-between">
-          <span id="totalPegsLabel" class="mono-badge teal">Razem: 225 miejsc (15 × 15)</span>
+          <span id="totalPegsLabel" class="mono-badge teal">Aktywnych pól: 225 (15 × 15)</span>
           <button id="btnSwapDims" type="button" class="btn btn-outline btn-sm">⇄ Zamień</button>
         </div>
       </section>
 
-      <!-- Card 2: Image Upload & Advanced Color Options -->
+      <!-- Card 2: Image Upload, Browser Storage & Advanced Color Options -->
       <section class="card">
         <div class="card-head">
           <h2>2. Rysunek (JPG/PNG) i kolory</h2>
+          <span class="storage-pill" title="Wgrywane pliki i projekt zapisują się automatycznie w pamięci przeglądarki">💾 Auto-zapis</span>
         </div>
 
         <div class="upload-box">
@@ -105,6 +112,15 @@
           <button type="button" class="sample-btn" id="sampleRocketBtn">🚀 Przykład: Rakieta</button>
         </div>
 
+        <!-- Saved browser images gallery -->
+        <div id="savedGalleryWrap" class="saved-gallery-wrap hidden">
+          <div class="row-between">
+            <span class="muted small"><strong>Zapisane w pamięci przeglądarki:</strong></span>
+            <button type="button" id="btnClearSavedImages" class="text-btn">Wyczyść</button>
+          </div>
+          <div id="savedImagesStrip" class="saved-images-strip"></div>
+        </div>
+
         <div class="segmented" id="cropModeGroup">
           <button type="button" class="seg-btn active" data-crop="fill">Wypełnij kadr (przytnij)</button>
           <button type="button" class="seg-btn" data-crop="fit">Cały rysunek (z tłem)</button>
@@ -120,7 +136,6 @@
           <button type="button" class="seg-btn" data-pmode="manual">Ręczny wybór (<span id="manualCountBadge">8</span>)</button>
         </div>
 
-        <!-- Automatic Palette Controls -->
         <div id="autoPaletteSection" class="palette-sub">
           <div class="row-between">
             <label for="colorCountSlider">Liczba posiadanych kolorów</label>
@@ -145,7 +160,6 @@
           </label>
         </div>
 
-        <!-- Manual Palette Selector -->
         <div id="manualPaletteSection" class="palette-sub hidden">
           <div class="row-between">
             <span class="muted small">Zaznacz koraliki, które masz:</span>
@@ -159,7 +173,6 @@
 
         <hr class="divider" />
 
-        <!-- Shade Tolerance Threshold (ΔE) -->
         <div class="palette-sub">
           <div class="row-between">
             <label for="toleranceSlider">Tolerancja podobnych odcieni (ΔE)</label>
@@ -321,7 +334,7 @@
           <button id="btnCopyLink" type="button" class="btn btn-outline">📋 Kopiuj link</button>
           <button id="btnShareSocial" type="button" class="btn btn-primary">🌐 Wyślij w social</button>
         </div>
-        <p class="muted small">Link zawiera pełny układ siatki i kolorów — otwiera się na dowolnym urządzeniu z GitHub Pages bez serwera.</p>
+        <p class="muted small">Link zawiera kształt podkładki, układ siatki i listę kolorów — otwiera się na dowolnym urządzeniu bez serwera.</p>
       </div>
     </div>
   </div>
