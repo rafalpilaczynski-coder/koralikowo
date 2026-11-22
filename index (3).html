@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Koralikowo — Kreator wzorów do koralików do prasowania</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Left / Setup Panel -->
+    <aside class="setup-panel">
+      <header class="brand-header">
+        <div class="brand-left">
+          <div class="brand-icon" aria-hidden="true">
+            <span class="bead b1"></span>
+            <span class="bead b2"></span>
+            <span class="bead b3"></span>
+            <span class="bead b4"></span>
+          </div>
+          <div>
+            <h1>Koralikowo</h1>
+            <p class="subtitle">Kreator wzorów do prasowania</p>
+          </div>
+        </div>
+        <button id="btnOpenLinkModal" class="btn btn-outline btn-sm" type="button">
+          🔗 Z linku
+        </button>
+      </header>
+
+      <!-- Card 1: Rectangular Board Dimensions -->
+      <section class="card">
+        <div class="card-head">
+          <div>
+            <h2>1. Obszar podkładki (prostokąt)</h2>
+            <p class="muted">Wybierz rozmiar w koralikach (szer. × wys.)</p>
+          </div>
+          <div class="ratio-preview-box" title="Proporcje podkładki">
+            <div id="ratioPreviewRect" class="ratio-rect"></div>
+          </div>
+        </div>
+
+        <div class="chip-grid" id="boardPresets">
+          <button type="button" class="chip" data-w="5" data-h="5">5 × 5</button>
+          <button type="button" class="chip" data-w="10" data-h="15">10 × 15</button>
+          <button type="button" class="chip active" data-w="15" data-h="15">15 × 15</button>
+          <button type="button" class="chip" data-w="15" data-h="20">15 × 20</button>
+          <button type="button" class="chip" data-w="20" data-h="20">20 × 20</button>
+          <button type="button" class="chip" data-w="29" data-h="29">29 × 29</button>
+        </div>
+
+        <div class="stepper-block">
+          <div class="stepper-row">
+            <label for="widthSlider">Szerokość</label>
+            <div class="stepper-controls">
+              <button type="button" class="icon-btn" id="widthMinus" aria-label="Zmniejsz szerokość">−</button>
+              <span id="widthValue" class="mono-val">15</span>
+              <button type="button" class="icon-btn" id="widthPlus" aria-label="Zwiększ szerokość">+</button>
+            </div>
+          </div>
+          <input id="widthSlider" type="range" min="3" max="60" value="15" />
+        </div>
+
+        <div class="stepper-block">
+          <div class="stepper-row">
+            <label for="heightSlider">Wysokość</label>
+            <div class="stepper-controls">
+              <button type="button" class="icon-btn" id="heightMinus" aria-label="Zmniejsz wysokość">−</button>
+              <span id="heightValue" class="mono-val">15</span>
+              <button type="button" class="icon-btn" id="heightPlus" aria-label="Zwiększ wysokość">+</button>
+            </div>
+          </div>
+          <input id="heightSlider" type="range" min="3" max="60" value="15" />
+        </div>
+
+        <div class="row-between">
+          <span id="totalPegsLabel" class="mono-badge teal">Razem: 225 miejsc (15 × 15)</span>
+          <button id="btnSwapDims" type="button" class="btn btn-outline btn-sm">⇄ Zamień</button>
+        </div>
+      </section>
+
+      <!-- Card 2: Image Upload & Advanced Color Options -->
+      <section class="card">
+        <div class="card-head">
+          <h2>2. Rysunek (JPG/PNG) i kolory</h2>
+        </div>
+
+        <div class="upload-box">
+          <canvas id="sourceThumbCanvas" width="76" height="76" class="thumb-canvas"></canvas>
+          <div class="upload-meta">
+            <div id="selectedFileName" class="file-name">Przykład: Lisek</div>
+            <label class="btn btn-primary" for="imageFileInput">
+              🖼️ Wgraj JPG / PNG
+            </label>
+            <input id="imageFileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+          </div>
+        </div>
+
+        <div class="sample-row">
+          <button type="button" class="sample-btn active" id="sampleFoxBtn">🦊 Przykład: Lisek</button>
+          <button type="button" class="sample-btn" id="sampleRocketBtn">🚀 Przykład: Rakieta</button>
+        </div>
+
+        <div class="segmented" id="cropModeGroup">
+          <button type="button" class="seg-btn active" data-crop="fill">Wypełnij kadr (przytnij)</button>
+          <button type="button" class="seg-btn" data-crop="fit">Cały rysunek (z tłem)</button>
+        </div>
+
+        <hr class="divider" />
+
+        <div class="sub-header">
+          <span>Dobór kolorów koralików</span>
+        </div>
+        <div class="segmented" id="paletteModeGroup">
+          <button type="button" class="seg-btn active" data-pmode="auto">Automatyczna</button>
+          <button type="button" class="seg-btn" data-pmode="manual">Ręczny wybór (<span id="manualCountBadge">8</span>)</button>
+        </div>
+
+        <!-- Automatic Palette Controls -->
+        <div id="autoPaletteSection" class="palette-sub">
+          <div class="row-between">
+            <label for="colorCountSlider">Liczba posiadanych kolorów</label>
+            <span id="colorCountBadge" class="mono-badge mustard">8 kolorów</span>
+          </div>
+          <div class="chip-grid" id="colorCountChips">
+            <button type="button" class="chip" data-colors="4">4</button>
+            <button type="button" class="chip" data-colors="6">6</button>
+            <button type="button" class="chip active" data-colors="8">8</button>
+            <button type="button" class="chip" data-colors="12">12</button>
+            <button type="button" class="chip" data-colors="16">16</button>
+            <button type="button" class="chip" data-colors="24">24</button>
+          </div>
+          <input id="colorCountSlider" type="range" min="2" max="24" value="8" />
+
+          <label class="switch-row">
+            <div>
+              <div class="switch-title">Dopasuj do palety koralików (Hama/Pyssla)</div>
+              <div class="muted small">Zamienia barwy na najbliższe realne koraliki z kodami</div>
+            </div>
+            <input id="snapPaletteCheck" type="checkbox" checked />
+          </label>
+        </div>
+
+        <!-- Manual Palette Selector -->
+        <div id="manualPaletteSection" class="palette-sub hidden">
+          <div class="row-between">
+            <span class="muted small">Zaznacz koraliki, które masz:</span>
+            <div class="inline-actions">
+              <button type="button" class="text-btn" id="btnManualBasic">Podstawowe 8</button>
+              <button type="button" class="text-btn" id="btnManualAll">Wszystkie</button>
+            </div>
+          </div>
+          <div id="manualPaletteGrid" class="manual-bead-grid"></div>
+        </div>
+
+        <hr class="divider" />
+
+        <!-- Shade Tolerance Threshold (ΔE) -->
+        <div class="palette-sub">
+          <div class="row-between">
+            <label for="toleranceSlider">Tolerancja podobnych odcieni (ΔE)</label>
+            <span id="toleranceBadge" class="mono-badge teal">Łagodna (10)</span>
+          </div>
+          <p class="muted small">Wyższy próg łączy zbliżone odcienie w jeden kolor koralika</p>
+          <input id="toleranceSlider" type="range" min="0" max="45" value="10" />
+        </div>
+      </section>
+
+      <button id="btnGenerate" type="button" class="btn btn-primary btn-lg">
+        ✨ Utwórz mapę koralików
+      </button>
+    </aside>
+
+    <!-- Right / Main Workspace -->
+    <main class="workspace-panel">
+      <div class="workspace-topbar">
+        <div>
+          <h2 id="patternTitle">Wzór 15 × 15</h2>
+          <p id="patternStats" class="mono-sub">225 koralików • 8 kolorów</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="btnUndoReplace" type="button" class="btn btn-outline btn-sm hidden">↩ Cofnij zamianę</button>
+          <button id="btnToggleOriginal" type="button" class="btn btn-outline btn-sm">🔍 Porównaj</button>
+          <button id="btnOpenExport" type="button" class="btn btn-primary btn-sm">📤 Eksport / Link</button>
+        </div>
+      </div>
+
+      <div class="segmented main-tabs" id="workspaceTabs">
+        <button type="button" class="seg-btn active" data-tab="map">🗺️ Mapa wzoru</button>
+        <button type="button" class="seg-btn" data-tab="sim">⚪ Symulacja koralików</button>
+        <button type="button" class="seg-btn" data-tab="legend">🎨 Lista kolorów</button>
+      </div>
+
+      <!-- TAB 1: Pattern Map -->
+      <section id="tabMap" class="tab-content active">
+        <div class="map-toolbar">
+          <label class="pill-toggle">
+            <input type="checkbox" id="chkShowNumbers" checked />
+            <span>Numery na mapie</span>
+          </label>
+          <label class="pill-toggle">
+            <input type="checkbox" id="chkPlacementMode" />
+            <span>Tryb układania (<span id="placedCounter">0</span>)</span>
+          </label>
+          <button id="btnClearPlaced" type="button" class="text-btn hidden">Wyczyść postęp</button>
+          <button id="btnResetMapZoom" type="button" class="text-btn">Resetuj widok</button>
+        </div>
+
+        <div id="selectedCellBanner" class="selected-banner hidden">
+          <div class="banner-left">
+            <span id="bannerSwatch" class="mini-swatch"></span>
+            <span id="bannerText"></span>
+          </div>
+          <button id="btnBannerReplace" type="button" class="text-btn">Zamień kolor</button>
+        </div>
+
+        <div class="canvas-stage">
+          <canvas id="mapCanvas"></canvas>
+          <canvas id="mapOriginalOverlay" class="original-overlay hidden" width="140" height="140"></canvas>
+          <div class="zoom-hint">Kółko myszy / przeciągnij, aby powiększyć lub przesunąć</div>
+        </div>
+
+        <div class="strip-wrap">
+          <div class="row-between">
+            <span class="muted small">Kliknij kolor, aby podświetlić jego miejsca na mapie</span>
+            <button id="btnClearHighlight" type="button" class="text-btn hidden">Pokaż wszystkie</button>
+          </div>
+          <div id="paletteStrip" class="palette-strip"></div>
+        </div>
+      </section>
+
+      <!-- TAB 2: Realistic Bead Simulation -->
+      <section id="tabSim" class="tab-content">
+        <div class="segmented" id="simModeGroup">
+          <button type="button" class="seg-btn active" data-sim="pegboard">Na podkładce</button>
+          <button type="button" class="seg-btn" data-sim="ironed">Po zaprasowaniu</button>
+        </div>
+
+        <div class="canvas-stage">
+          <canvas id="simCanvas"></canvas>
+          <canvas id="simOriginalOverlay" class="original-overlay hidden" width="140" height="140"></canvas>
+          <button id="btnResetSimZoom" type="button" class="float-reset-btn">Resetuj widok</button>
+        </div>
+
+        <div class="card sim-controls">
+          <label id="simPegsControl" class="switch-row">
+            <div>
+              <div class="switch-title">Pokaż piny podkładki</div>
+              <div class="muted small">Widoczne bolce podkładki wewnątrz cylindrycznych koralików</div>
+            </div>
+            <input id="chkShowPins" type="checkbox" checked />
+          </label>
+          <div id="simIronControl" class="palette-sub hidden">
+            <div class="row-between">
+              <label for="ironSlider">Stopień zaprasowania</label>
+              <span id="ironBadge" class="mono-badge coral">65%</span>
+            </div>
+            <input id="ironSlider" type="range" min="10" max="100" value="65" />
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: Legend & Color Replacement -->
+      <section id="tabLegend" class="tab-content">
+        <div class="legend-summary-card">
+          <div>
+            <strong>Zestaw koralików do przygotowania</strong>
+            <div class="muted small">Kliknij kolor, aby podświetlić na mapie lub użyj „Zamień”</div>
+          </div>
+          <span id="legendTotalCount" class="mono-val">225 szt.</span>
+        </div>
+        <div id="legendList" class="legend-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Export & Share Modal -->
+  <div id="exportModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="row-between">
+        <h3>Eksport i udostępnianie</h3>
+        <button class="icon-btn" id="btnCloseExport" type="button" aria-label="Zamknij">✕</button>
+      </div>
+
+      <div class="modal-section">
+        <span class="field-label">Co wyeksportować?</span>
+        <div class="chip-grid" id="exportContentGroup">
+          <button type="button" class="chip" data-econtent="map">Mapa wzoru</button>
+          <button type="button" class="chip" data-econtent="sim">Symulacja</button>
+          <button type="button" class="chip active" data-econtent="both">Mapa + Symulacja</button>
+        </div>
+      </div>
+
+      <div class="modal-section">
+        <span class="field-label">Format pliku</span>
+        <div class="segmented" id="exportFormatGroup">
+          <button type="button" class="seg-btn" data-efmt="png">PNG</button>
+          <button type="button" class="seg-btn" data-efmt="jpg">JPG</button>
+          <button type="button" class="seg-btn active" data-efmt="pdf">PDF</button>
+        </div>
+      </div>
+
+      <div class="modal-actions-row">
+        <button id="btnDownloadExport" type="button" class="btn btn-primary">⬇ Zapisz plik</button>
+        <button id="btnShareExport" type="button" class="btn btn-outline">📤 Udostępnij plik</button>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="modal-section">
+        <div class="row-between">
+          <span class="field-label">Unikalny link do projektu</span>
+          <span id="shareShortCode" class="mono-badge teal">KRL-0000</span>
+        </div>
+        <textarea id="shareLinkBox" class="link-box" readonly rows="2"></textarea>
+        <div class="modal-actions-row">
+          <button id="btnCopyLink" type="button" class="btn btn-outline">📋 Kopiuj link</button>
+          <button id="btnShareSocial" type="button" class="btn btn-primary">🌐 Wyślij w social</button>
+        </div>
+        <p class="muted small">Link zawiera pełny układ siatki i kolorów — otwiera się na dowolnym urządzeniu z GitHub Pages bez serwera.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Replace Color Modal -->
+  <div id="replaceModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="row-between">
+        <div>
+          <h3>Zamień kolor w projekcie</h3>
+          <p id="replaceSourceInfo" class="muted small"></p>
+        </div>
+        <button class="icon-btn" id="btnCloseReplace" type="button" aria-label="Zamknij">✕</button>
+      </div>
+      <div id="replacePaletteGrid" class="replace-grid"></div>
+    </div>
+  </div>
+
+  <!-- Import Link Modal -->
+  <div id="importLinkModal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-sm">
+      <div class="row-between">
+        <h3>Otwórz wzór z linku</h3>
+        <button class="icon-btn" id="btnCloseImport" type="button" aria-label="Zamknij">✕</button>
+      </div>
+      <p class="muted small">Wklej udostępniony link lub kod po `#p=`, aby odtworzyć projekt:</p>
+      <textarea id="importLinkInput" class="link-box" rows="3" placeholder="https://.../#p=..."></textarea>
+      <p id="importErrorMsg" class="error-text hidden">Nieprawidłowy lub uszkodzony link projektu.</p>
+      <div class="modal-actions-row">
+        <button id="btnCancelImport" type="button" class="btn btn-outline">Anuluj</button>
+        <button id="btnConfirmImport" type="button" class="btn btn-primary">Wczytaj projekt</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
