@@ -140,22 +140,118 @@ h1, h2, h3 {
   font-size: 0.8rem;
 }
 
-.ratio-preview-box {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
+.ratio-preview-canvas {
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
   background: var(--surface-alt);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 6px;
+  border: 1px solid var(--border);
   flex-shrink: 0;
 }
 
-.ratio-rect {
-  background: rgba(217, 78, 59, 0.25);
-  border: 2px solid var(--coral);
-  border-radius: 3px;
+.shape-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.shape-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 11px;
+  padding: 7px 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: 0.15s ease;
+  white-space: nowrap;
+}
+
+.shape-btn:hover {
+  background: var(--surface-alt);
+}
+
+.shape-btn.active {
+  background: var(--coral-soft);
+  border-color: var(--coral);
+  color: #410e08;
+}
+
+.storage-pill {
+  font-size: 0.74rem;
+  font-weight: 700;
+  background: var(--teal-soft);
+  color: #00201e;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.saved-gallery-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.saved-images-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 0 4px;
+}
+
+.saved-img-card {
+  position: relative;
+  width: 62px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.saved-img-card.active {
+  border-color: var(--coral);
+  background: var(--coral-soft);
+}
+
+.saved-img-card img {
+  width: 50px;
+  height: 50px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.saved-img-name {
+  font-size: 0.65rem;
+  max-width: 54px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.saved-img-del {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #1f1b17;
+  color: #fff;
+  font-size: 0.65rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .chip-grid {
