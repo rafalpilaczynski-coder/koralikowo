@@ -1,4 +1,4 @@
-// Koralikowo — Standalone Browser Engine (100% client-side, zero LLM, GitHub Pages ready)
+// Koralikowo — Standalone Browser Engine (IndexedDB + localStorage persistence, 6 pegboard shapes, GitHub Pages ready)
 
 const STANDARD_BEAD_PALETTE = [
   { code: 'K01', name: 'Biel', rgb: [250, 250, 250] },
@@ -40,18 +40,24 @@ const STANDARD_BEAD_PALETTE = [
 ];
 
 const DEFAULT_MANUAL_CODES = new Set(['K01', 'K04', 'K06', 'K08', 'K18', 'K23', 'K29', 'K34']);
+const SYMMETRIC_SHAPES = new Set(['circle', 'heart', 'star', 'hex']);
+const SESSION_STORAGE_KEY = 'koralikowo_session_v2';
 
 const state = {
+  shape: 'rect', // 'rect' | 'circle' | 'heart' | 'star' | 'hex' | 'oval'
   width: 15,
   height: 15,
   colorCount: 8,
   snapToPalette: true,
-  paletteMode: 'auto', // 'auto' | 'manual'
+  paletteMode: 'auto',
   manualCodes: new Set(DEFAULT_MANUAL_CODES),
   shadeTolerance: 10,
-  cropMode: 'fill', // 'fill' | 'fit'
+  cropMode: 'fill',
   sourceCanvas: null,
   sourceName: 'Przykład: Lisek',
+  sourceSampleId: 'fox',
+  activeSavedImageId: null,
+  savedImages: [],
   pattern: null,
   undoPattern: null,
   activeTab: 'map',
@@ -68,8 +74,192 @@ const state = {
   simView: { scale: 1, panX: 0, panY: 0 },
   exportContent: 'both',
   exportFormat: 'pdf',
-  replaceTargetIdx: null,
 };
+
+// --- IndexedDB for Saved Uploaded Images ---
+
+const IDB_NAME = 'koralikowo_db';
+const IDB_STORE = 'uploaded_images';
+
+function openImagesDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error('No IndexedDB'));
+      return;
+    }
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGetAllImages() {
+  try {
+    const db = await openImagesDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).getAll();
+      req.onsuccess = () => resolve((req.result || []).sort((a, b) => b.savedAt - a.savedAt));
+      req.onerror = () => reject(req.error);
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function idbPutImage(record) {
+  try {
+    const db = await openImagesDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(record);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // ignore storage quota errors gracefully
+  }
+}
+
+async function idbDeleteImage(id) {
+  try {
+    const db = await openImagesDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {}
+}
+
+async function idbClearImages() {
+  try {
+    const db = await openImagesDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {}
+}
+
+function persistSessionToLocalStorage() {
+  try {
+    const payload = {
+      shape: state.shape,
+      width: state.width,
+      height: state.height,
+      colorCount: state.colorCount,
+      snapToPalette: state.snapToPalette,
+      paletteMode: state.paletteMode,
+      manualCodes: Array.from(state.manualCodes),
+      shadeTolerance: state.shadeTolerance,
+      cropMode: state.cropMode,
+      sourceName: state.sourceName,
+      sourceSampleId: state.sourceSampleId,
+      activeSavedImageId: state.activeSavedImageId,
+      placedCells: Array.from(state.placedCells),
+      simMode: state.simMode,
+      ironIntensity: state.ironIntensity,
+      pattern: state.pattern,
+    };
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore private browsing quota limits
+  }
+}
+
+function loadSessionFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// --- Pegboard Shape Geometry ---
+
+function buildStarPolygon() {
+  const pts = [];
+  for (let i = 0; i < 10; i++) {
+    const angle = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rad = i % 2 === 0 ? 1.0 : 0.42;
+    pts.push([Math.cos(angle) * rad, Math.sin(angle) * rad]);
+  }
+  return pts;
+}
+const STAR_POLY = buildStarPolygon();
+
+function pointInPolygon(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function isCellInShape(shape, row, col, width, height) {
+  if (shape === 'rect') return true;
+  // Normalized coordinates in [-1, 1] at cell center
+  const nx = ((col + 0.5) / width) * 2 - 1;
+  const ny = ((row + 0.5) / height) * 2 - 1;
+
+  if (shape === 'circle' || shape === 'oval') {
+    const margin = 1 + 0.35 / Math.max(width, height);
+    return (nx * nx + ny * ny) <= margin * margin * 0.96;
+  }
+  if (shape === 'hex') {
+    const ax = Math.abs(nx);
+    const ay = Math.abs(ny);
+    return ay <= 0.96 && (ax * 0.8660254 + ay * 0.5) <= 0.92;
+  }
+  if (shape === 'heart') {
+    // Flip Y so heart points down (canvas Y goes down)
+    const x = nx * 1.18;
+    const y = -ny * 1.18 + 0.14;
+    const eq = Math.pow(x * x + y * y - 1, 3) - x * x * Math.pow(y, 3);
+    return eq <= 0.04;
+  }
+  if (shape === 'star') {
+    return pointInPolygon(nx * 1.02, ny * 1.02 + 0.06, STAR_POLY);
+  }
+  return true;
+}
+
+function countActiveCells(shape, width, height) {
+  if (shape === 'rect') return width * height;
+  let cnt = 0;
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      if (isCellInShape(shape, r, c, width, height)) cnt++;
+    }
+  }
+  return cnt;
+}
+
+function shapeDisplayName(shape) {
+  switch (shape) {
+    case 'circle': return 'Koło';
+    case 'heart': return 'Serce';
+    case 'star': return 'Gwiazda';
+    case 'hex': return 'Sześciokąt';
+    case 'oval': return 'Owal';
+    default: return 'Prostokąt';
+  }
+}
 
 // --- Color Math: sRGB <-> CIE Lab ---
 
@@ -125,17 +315,11 @@ function labDistSq(a, b) {
 }
 
 function rgbToHex(rgb) {
-  return (
-    '#' +
-    rgb
-      .map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0'))
-      .join('')
-  );
+  return '#' + rgb.map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
 }
 
 function isDarkColor(rgb) {
-  const lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
-  return lum < 0.52;
+  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 < 0.52;
 }
 
 function describeRgbInPolish(rgb) {
@@ -167,55 +351,44 @@ function describeRgbInPolish(rgb) {
 function createSampleCanvas(kind) {
   const c = document.createElement('canvas');
   c.width = 360;
-  c.height = 360;
+  c.height = kind === 'rocket' ? 480 : 360;
   const ctx = c.getContext('2d');
   if (kind === 'fox') {
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, 360, 360);
-    // Ears
     ctx.fillStyle = '#FF6D00';
     ctx.beginPath(); ctx.moveTo(68, 130); ctx.lineTo(95, 42); ctx.lineTo(155, 102); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(292, 130); ctx.lineTo(265, 42); ctx.lineTo(205, 102); ctx.closePath(); ctx.fill();
     ctx.fillStyle = '#4E342E';
     ctx.beginPath(); ctx.moveTo(86, 114); ctx.lineTo(100, 62); ctx.lineTo(136, 98); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(274, 114); ctx.lineTo(260, 62); ctx.lineTo(224, 98); ctx.closePath(); ctx.fill();
-    // Head
     ctx.fillStyle = '#FF6D00';
     ctx.beginPath(); ctx.ellipse(180, 195, 118, 96, 0, 0, Math.PI * 2); ctx.fill();
-    // Cheeks
     ctx.fillStyle = '#FFF3DF';
     ctx.beginPath(); ctx.moveTo(64, 200); ctx.quadraticCurveTo(120, 290, 180, 290); ctx.quadraticCurveTo(135, 225, 64, 200); ctx.fill();
     ctx.beginPath(); ctx.moveTo(296, 200); ctx.quadraticCurveTo(240, 290, 180, 290); ctx.quadraticCurveTo(225, 225, 296, 200); ctx.fill();
-    // Eyes & Nose
     ctx.fillStyle = '#1E1E1E';
     ctx.beginPath(); ctx.arc(132, 182, 14, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(228, 182, 14, 0, Math.PI * 2); ctx.fill();
     ctx.beginPath(); ctx.arc(180, 244, 16, 0, Math.PI * 2); ctx.fill();
   } else {
-    c.height = 480;
     ctx.fillStyle = '#1A237E';
     ctx.fillRect(0, 0, 360, 480);
-    // Stars
     ctx.fillStyle = '#FFEB3B';
     [[55, 70, 8], [305, 95, 9], [70, 330, 7], [300, 360, 8]].forEach(([x, y, r]) => {
       ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
     });
-    // Flame
     ctx.fillStyle = '#FF6D00';
     ctx.beginPath(); ctx.moveTo(135, 345); ctx.lineTo(180, 445); ctx.lineTo(225, 345); ctx.closePath(); ctx.fill();
     ctx.fillStyle = '#FFEB3B';
     ctx.beginPath(); ctx.moveTo(155, 345); ctx.lineTo(180, 412); ctx.lineTo(205, 345); ctx.closePath(); ctx.fill();
-    // Fins
     ctx.fillStyle = '#D32F2F';
     ctx.beginPath(); ctx.moveTo(120, 260); ctx.lineTo(75, 345); ctx.lineTo(130, 335); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(240, 260); ctx.lineTo(285, 345); ctx.lineTo(230, 335); ctx.closePath(); ctx.fill();
-    // Body
     ctx.fillStyle = '#FAFAFA';
     ctx.beginPath(); ctx.ellipse(180, 215, 62, 130, 0, 0, Math.PI * 2); ctx.fill();
-    // Nosecone
     ctx.fillStyle = '#D32F2F';
     ctx.beginPath(); ctx.moveTo(125, 145); ctx.quadraticCurveTo(180, 50, 235, 145); ctx.closePath(); ctx.fill();
-    // Porthole
     ctx.fillStyle = '#1E88E5';
     ctx.beginPath(); ctx.arc(180, 205, 28, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#90A4AE';
@@ -225,7 +398,22 @@ function createSampleCanvas(kind) {
   return c;
 }
 
-// --- Pattern Quantization Engine ---
+function canvasFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width;
+      c.height = img.height;
+      c.getContext('2d').drawImage(img, 0, 0);
+      resolve(c);
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+// --- Pattern Quantization Engine (Shape-Aware) ---
 
 function sampleSourceToCells(sourceCanvas, targetW, targetH, cropMode) {
   const scale = 8;
@@ -322,11 +510,26 @@ function generatePattern() {
   if (!state.sourceCanvas) return;
   const w = state.width;
   const h = state.height;
-  const cells = sampleSourceToCells(state.sourceCanvas, w, h, state.cropMode);
-  const total = cells.length;
-  const labs = cells.map(rgbToLab);
+  const shape = state.shape;
+  const allCells = sampleSourceToCells(state.sourceCanvas, w, h, state.cropMode);
 
-  let assignments = new Int32Array(total);
+  // Collect ONLY active cells inside the selected pegboard shape!
+  const activePositions = [];
+  const activeCells = [];
+  for (let r = 0; r < h; r++) {
+    for (let c = 0; c < w; c++) {
+      if (isCellInShape(shape, r, c, w, h)) {
+        activePositions.push([r, c]);
+        activeCells.push(allCells[r * w + c]);
+      }
+    }
+  }
+
+  const total = activeCells.length;
+  if (total === 0) return;
+  const labs = activeCells.map(rgbToLab);
+
+  const assignments = new Int32Array(total);
   let initialInfos = [];
 
   if (state.paletteMode === 'manual') {
@@ -337,17 +540,14 @@ function generatePattern() {
       let bestD = Infinity;
       for (let m = 0; m < manualLabs.length; m++) {
         const d = labDistSq(labs[i], manualLabs[m]);
-        if (d < bestD) {
-          bestD = d;
-          bestIdx = m;
-        }
+        if (d < bestD) { bestD = d; bestIdx = m; }
       }
       assignments[i] = bestIdx;
     }
     initialInfos = manualList.map((b) => ({ code: b.code, name: b.name, rgb: b.rgb.slice() }));
   } else {
     const uniqueMap = new Map();
-    cells.forEach((rgb) => {
+    activeCells.forEach((rgb) => {
       const key = rgb.join(',');
       if (!uniqueMap.has(key)) uniqueMap.set(key, rgb);
     });
@@ -358,7 +558,7 @@ function generatePattern() {
     if (uniqueList.length <= state.colorCount && !state.snapToPalette) {
       clusterRgbs = uniqueList;
       for (let i = 0; i < total; i++) {
-        assignments[i] = uniqueList.findIndex((u) => u[0] === cells[i][0] && u[1] === cells[i][1] && u[2] === cells[i][2]);
+        assignments[i] = uniqueList.findIndex((u) => u[0] === activeCells[i][0] && u[1] === activeCells[i][1] && u[2] === activeCells[i][2]);
       }
     } else {
       const centroids = kMeansPlusPlusInit(labs, k);
@@ -427,9 +627,8 @@ function generatePattern() {
   const remap = new Int32Array(initialInfos.length);
   initialInfos.forEach((info, i) => {
     const key = info.rgb.join(',');
-    if (keyToNew.has(key)) {
-      remap[i] = keyToNew.get(key);
-    } else {
+    if (keyToNew.has(key)) remap[i] = keyToNew.get(key);
+    else {
       const ni = dedupedInfos.length;
       keyToNew.set(key, ni);
       dedupedInfos.push(info);
@@ -459,11 +658,7 @@ function generatePattern() {
       for (let i = 0; i < activeIds.length; i++) {
         for (let j = i + 1; j < activeIds.length; j++) {
           const de = Math.sqrt(labDistSq(dLabs[activeIds[i]], dLabs[activeIds[j]]));
-          if (de < bestDE) {
-            bestDE = de;
-            bestA = activeIds[i];
-            bestB = activeIds[j];
-          }
+          if (de < bestDE) { bestDE = de; bestA = activeIds[i]; bestB = activeIds[j]; }
         }
       }
       if (bestA < 0 || bestDE > state.shadeTolerance) break;
@@ -477,7 +672,6 @@ function generatePattern() {
     for (let i = 0; i < total; i++) remapped[i] = redirect[remapped[i]];
   }
 
-  // Final counts & sort descending
   const finalCounts = new Int32Array(dedupedInfos.length);
   for (let i = 0; i < total; i++) finalCounts[remapped[i]]++;
 
@@ -499,22 +693,21 @@ function generatePattern() {
     };
   });
 
-  const grid = [];
-  for (let r = 0; r < h; r++) {
-    const row = [];
-    for (let c = 0; c < w; c++) {
-      row.push(oldToSorted[remapped[r * w + c]]);
-    }
-    grid.push(row);
+  // Fill 2D grid with -1 for inactive cells outside shape
+  const grid = Array.from({ length: h }, () => new Array(w).fill(-1));
+  for (let i = 0; i < activePositions.length; i++) {
+    const [r, c] = activePositions[i];
+    grid[r][c] = oldToSorted[remapped[i]];
   }
 
-  state.pattern = { width: w, height: h, grid, palette, totalBeads: w * h };
+  state.pattern = { shape, width: w, height: h, grid, palette, totalBeads: total };
   state.undoPattern = null;
   state.highlightedIndex = null;
   state.selectedCell = null;
   state.placedCells.clear();
   state.mapView = { scale: 1, panX: 0, panY: 0 };
   state.simView = { scale: 1, panX: 0, panY: 0 };
+  persistSessionToLocalStorage();
   refreshWorkspaceUI();
 }
 
@@ -546,6 +739,7 @@ function replaceColorGlobally(fromIdx, toBead) {
   const counts = new Int32Array(deduped.length);
   const tempGrid = p.grid.map((row) =>
     row.map((val) => {
+      if (val < 0) return -1;
       const nv = remap[val];
       counts[nv]++;
       return nv;
@@ -570,17 +764,19 @@ function replaceColorGlobally(fromIdx, toBead) {
     };
   });
 
-  const grid = tempGrid.map((row) => row.map((v) => oldToSorted[v]));
-  state.pattern = { width: p.width, height: p.height, grid, palette, totalBeads: p.totalBeads };
+  const grid = tempGrid.map((row) => row.map((v) => (v < 0 ? -1 : oldToSorted[v])));
+  state.pattern = { shape: p.shape || 'rect', width: p.width, height: p.height, grid, palette, totalBeads: p.totalBeads };
   state.highlightedIndex = null;
   state.selectedCell = null;
+  persistSessionToLocalStorage();
   refreshWorkspaceUI();
   showToast(`Zamieniono kolor na ${toBead.name} (${toBead.code})`);
 }
 
-// --- Shareable URL Codec (RLE + UTF-8 Base64URL in #p=...) ---
+// --- Shareable URL Codec (Version 2 with Shape + RLE -1 empty cells) ---
 
 function encodePatternToUrl(pattern) {
+  const shape = pattern.shape || 'rect';
   const palStr = pattern.palette
     .map((e) => `${e.code}~${e.hex.slice(1)}~${e.name.replace(/[|;~]/g, '')}`)
     .join(';');
@@ -591,12 +787,13 @@ function encodePatternToUrl(pattern) {
   const runs = [];
   for (let i = 0; i < flat.length; ) {
     const v = flat[i];
+    const token = v < 0 ? 'e' : String(v);
     let len = 1;
     while (i + len < flat.length && flat[i + len] === v) len++;
-    runs.push(len > 1 ? `${len}x${v}` : `${v}`);
+    runs.push(len > 1 ? `${len}x${token}` : token);
     i += len;
   }
-  const raw = `1|${pattern.width}|${pattern.height}|${palStr}|${runs.join(',')}`;
+  const raw = `2|${shape}|${pattern.width}|${pattern.height}|${palStr}|${runs.join(',')}`;
   const bytes = new TextEncoder().encode(raw);
   let bin = '';
   bytes.forEach((b) => (bin += String.fromCharCode(b)));
@@ -627,13 +824,26 @@ function decodePatternFromHash(input) {
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const raw = new TextDecoder().decode(bytes);
     const parts = raw.split('|');
-    if (parts.length !== 5 || parts[0] !== '1') return null;
 
-    const width = parseInt(parts[1], 10);
-    const height = parseInt(parts[2], 10);
+    let shape = 'rect', width, height, palPart, runPart;
+    if (parts[0] === '2' && parts.length === 6) {
+      shape = parts[1];
+      width = parseInt(parts[2], 10);
+      height = parseInt(parts[3], 10);
+      palPart = parts[4];
+      runPart = parts[5];
+    } else if (parts[0] === '1' && parts.length === 5) {
+      width = parseInt(parts[1], 10);
+      height = parseInt(parts[2], 10);
+      palPart = parts[3];
+      runPart = parts[4];
+    } else {
+      return null;
+    }
+
     if (width < 2 || width > 80 || height < 2 || height > 80) return null;
 
-    const rawPalette = parts[3].split(';').filter(Boolean).map((tok) => {
+    const rawPalette = palPart.split(';').filter(Boolean).map((tok) => {
       const [code, hex, name] = tok.split('~');
       const r = parseInt(hex.slice(0, 2), 16);
       const g = parseInt(hex.slice(2, 4), 16);
@@ -642,20 +852,26 @@ function decodePatternFromHash(input) {
     });
 
     const flat = [];
-    parts[4].split(',').filter(Boolean).forEach((run) => {
+    runPart.split(',').filter(Boolean).forEach((run) => {
       if (run.includes('x')) {
         const [cntStr, valStr] = run.split('x');
         const cnt = parseInt(cntStr, 10);
-        const val = parseInt(valStr, 10);
+        const val = valStr === 'e' ? -1 : parseInt(valStr, 10);
         for (let k = 0; k < cnt; k++) flat.push(val);
       } else {
-        flat.push(parseInt(run, 10));
+        flat.push(run === 'e' ? -1 : parseInt(run, 10));
       }
     });
     if (flat.length !== width * height) return null;
 
     const counts = new Int32Array(rawPalette.length);
-    flat.forEach((v) => counts[v]++);
+    let totalBeads = 0;
+    flat.forEach((v) => {
+      if (v >= 0) {
+        counts[v]++;
+        totalBeads++;
+      }
+    });
 
     const palette = rawPalette.map((p, idx) => ({
       number: idx + 1,
@@ -669,13 +885,39 @@ function decodePatternFromHash(input) {
     for (let r = 0; r < height; r++) {
       grid.push(flat.slice(r * width, (r + 1) * width));
     }
-    return { width, height, grid, palette, totalBeads: width * height };
+    return { shape, width, height, grid, palette, totalBeads };
   } catch {
     return null;
   }
 }
 
-// --- Canvas Rendering: Pattern Map & Realistic Simulation ---
+// --- Canvas Rendering: Shape Preview, Map, Simulation ---
+
+function drawShapePreview() {
+  const canvas = document.getElementById('shapePreviewCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const cols = state.width;
+  const rows = state.height;
+  const pad = 6;
+  const cell = Math.min((w - pad * 2) / cols, (h - pad * 2) / rows);
+  const ox = (w - cols * cell) / 2;
+  const oy = (h - rows * cell) / 2;
+
+  ctx.fillStyle = '#D94E3B';
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (!isCellInShape(state.shape, r, c, cols, rows)) continue;
+      ctx.beginPath();
+      ctx.arc(ox + c * cell + cell / 2, oy + r * cell + cell / 2, Math.max(0.8, cell * 0.38), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
 
 function resizeCanvasToDisplaySize(canvas) {
   const rect = canvas.getBoundingClientRect();
@@ -719,7 +961,6 @@ function drawMapCanvas() {
   ctx.translate(panX, panY);
   ctx.scale(scale, scale);
 
-  // Axis labels
   const step = Math.max(p.width, p.height) > 35 ? 5 : Math.max(p.width, p.height) > 20 ? 2 : 1;
   ctx.fillStyle = '#5B5046';
   ctx.font = `600 ${Math.max(11, Math.min(18, geom.cellSize * 0.42))}px "JetBrains Mono", monospace`;
@@ -742,6 +983,7 @@ function drawMapCanvas() {
   for (let r = 0; r < p.height; r++) {
     for (let c = 0; c < p.width; c++) {
       const palIdx = p.grid[r][c];
+      if (palIdx < 0) continue; // Inactive outside pegboard shape
       const entry = p.palette[palIdx];
       const x = geom.originX + c * geom.cellSize;
       const y = geom.originY + r * geom.cellSize;
@@ -751,6 +993,12 @@ function drawMapCanvas() {
       ctx.globalAlpha = isDimmed ? 0.22 : isPlaced ? 0.36 : 1;
       ctx.fillStyle = entry.hex;
       ctx.fillRect(x, y, geom.cellSize + 0.5, geom.cellSize + 0.5);
+
+      // Cell border
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = 'rgba(130, 118, 106, 0.55)';
+      ctx.lineWidth = Math.max(0.6, 1 / scale);
+      ctx.strokeRect(x, y, geom.cellSize, geom.cellSize);
 
       if (isPlaced) {
         ctx.globalAlpha = 0.9;
@@ -777,33 +1025,30 @@ function drawMapCanvas() {
   }
   ctx.globalAlpha = 1;
 
-  // Minor grid
-  ctx.strokeStyle = 'rgba(130, 118, 106, 0.45)';
-  ctx.lineWidth = Math.max(0.6, 1 / scale);
-  for (let c = 0; c <= p.width; c++) {
-    const x = geom.originX + c * geom.cellSize;
-    ctx.beginPath(); ctx.moveTo(x, geom.originY); ctx.lineTo(x, geom.originY + geom.gridH); ctx.stroke();
-  }
-  for (let r = 0; r <= p.height; r++) {
-    const y = geom.originY + r * geom.cellSize;
-    ctx.beginPath(); ctx.moveTo(geom.originX, y); ctx.lineTo(geom.originX + geom.gridW, y); ctx.stroke();
+  // Major 5x5 guide lines (clipped to active cells for shaped boards)
+  ctx.strokeStyle = 'rgba(31, 27, 23, 0.55)';
+  ctx.lineWidth = Math.max(1.2, 2.2 / scale);
+  for (let r = 0; r < p.height; r++) {
+    for (let c = 0; c < p.width; c++) {
+      if (p.grid[r][c] < 0) continue;
+      const x = geom.originX + c * geom.cellSize;
+      const y = geom.originY + r * geom.cellSize;
+      if (c % 5 === 0 || p.grid[r][c - 1] < 0) {
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + geom.cellSize); ctx.stroke();
+      }
+      if (c === p.width - 1 || p.grid[r][c + 1] < 0) {
+        ctx.beginPath(); ctx.moveTo(x + geom.cellSize, y); ctx.lineTo(x + geom.cellSize, y + geom.cellSize); ctx.stroke();
+      }
+      if (r % 5 === 0 || (p.grid[r - 1] && p.grid[r - 1][c] < 0)) {
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + geom.cellSize, y); ctx.stroke();
+      }
+      if (r === p.height - 1 || (p.grid[r + 1] && p.grid[r + 1][c] < 0)) {
+        ctx.beginPath(); ctx.moveTo(x, y + geom.cellSize); ctx.lineTo(x + geom.cellSize, y + geom.cellSize); ctx.stroke();
+      }
+    }
   }
 
-  // Major 5x5 lines
-  ctx.strokeStyle = 'rgba(31, 27, 23, 0.65)';
-  ctx.lineWidth = Math.max(1.2, 2.4 / scale);
-  for (let c = 0; c <= p.width; c += 5) {
-    const x = geom.originX + c * geom.cellSize;
-    ctx.beginPath(); ctx.moveTo(x, geom.originY); ctx.lineTo(x, geom.originY + geom.gridH); ctx.stroke();
-  }
-  for (let r = 0; r <= p.height; r += 5) {
-    const y = geom.originY + r * geom.cellSize;
-    ctx.beginPath(); ctx.moveTo(geom.originX, y); ctx.lineTo(geom.originX + geom.gridW, y); ctx.stroke();
-  }
-  ctx.strokeRect(geom.originX, geom.originY, geom.gridW, geom.gridH);
-
-  // Selected cell marker
-  if (state.selectedCell) {
+  if (state.selectedCell && p.grid[state.selectedCell.row]?.[state.selectedCell.col] >= 0) {
     const sx = geom.originX + state.selectedCell.col * geom.cellSize;
     const sy = geom.originY + state.selectedCell.row * geom.cellSize;
     ctx.strokeStyle = '#FFFFFF';
@@ -821,6 +1066,29 @@ function shadeHex(rgb, factor) {
   return rgbToHex(rgb.map((v) => Math.max(0, Math.min(255, Math.round(v + (factor > 0 ? (255 - v) * factor : v * factor))))));
 }
 
+function drawPegboardPlate(ctx, shape, startX, startY, gridW, gridH, boardPad) {
+  ctx.save();
+  if (shape === 'circle' || shape === 'oval') {
+    const cx = startX + gridW / 2;
+    const cy = startY + gridH / 2;
+    const rx = gridW / 2 + boardPad;
+    const ry = gridH / 2 + boardPad;
+    ctx.fillStyle = 'rgba(0,0,0,0.10)';
+    ctx.beginPath(); ctx.ellipse(cx + 4, cy + 6, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#FDFBF7';
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#D6CEC2'; ctx.lineWidth = 2; ctx.stroke();
+  } else if (shape === 'rect') {
+    ctx.fillStyle = 'rgba(0,0,0,0.10)';
+    ctx.beginPath(); ctx.roundRect(startX - boardPad + 4, startY - boardPad + 6, gridW + boardPad * 2, gridH + boardPad * 2, 16); ctx.fill();
+    ctx.fillStyle = '#FDFBF7';
+    ctx.beginPath(); ctx.roundRect(startX - boardPad, startY - boardPad, gridW + boardPad * 2, gridH + boardPad * 2, 16); ctx.fill();
+    ctx.strokeStyle = '#D6CEC2'; ctx.lineWidth = 2; ctx.stroke();
+  }
+  // For heart / star / hex: draw per-cell connected pegboard halo underneath
+  ctx.restore();
+}
+
 function drawSimulationCanvas() {
   const canvas = document.getElementById('simCanvas');
   if (!state.pattern || !canvas) return;
@@ -829,6 +1097,7 @@ function drawSimulationCanvas() {
   ctx.clearRect(0, 0, w, h);
 
   const p = state.pattern;
+  const shape = p.shape || 'rect';
   const pad = 28;
   const cellSize = Math.min((w - pad * 2) / p.width, (h - pad * 2) / p.height);
   const gridW = cellSize * p.width;
@@ -849,30 +1118,38 @@ function drawSimulationCanvas() {
 
   const boardPad = Math.max(8, Math.min(22, cellSize * 0.45));
   if (state.simMode === 'pegboard') {
-    ctx.fillStyle = 'rgba(0,0,0,0.10)';
-    ctx.beginPath();
-    ctx.roundRect(startX - boardPad + 4, startY - boardPad + 6, gridW + boardPad * 2, gridH + boardPad * 2, 16);
-    ctx.fill();
-
-    ctx.fillStyle = '#FDFBF7';
-    ctx.beginPath();
-    ctx.roundRect(startX - boardPad, startY - boardPad, gridW + boardPad * 2, gridH + boardPad * 2, 16);
-    ctx.fill();
-    ctx.strokeStyle = '#D6CEC2';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  } else {
-    ctx.fillStyle = 'rgba(0,0,0,0.14)';
-    ctx.beginPath();
-    ctx.roundRect(startX + 4, startY + 6, gridW, gridH, cellSize * 0.25);
-    ctx.fill();
+    if (shape === 'rect' || shape === 'circle' || shape === 'oval') {
+      drawPegboardPlate(ctx, shape, startX, startY, gridW, gridH, boardPad);
+    } else {
+      // Shaped translucent pegboard backing under active cells
+      ctx.fillStyle = 'rgba(0,0,0,0.09)';
+      for (let r = 0; r < p.height; r++) {
+        for (let c = 0; c < p.width; c++) {
+          if (p.grid[r][c] < 0) continue;
+          const cx = startX + c * cellSize + cellSize / 2;
+          const cy = startY + r * cellSize + cellSize / 2;
+          ctx.beginPath(); ctx.arc(cx + 3, cy + 5, cellSize * 0.72, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.fillStyle = '#FDFBF7';
+      for (let r = 0; r < p.height; r++) {
+        for (let c = 0; c < p.width; c++) {
+          if (p.grid[r][c] < 0) continue;
+          const cx = startX + c * cellSize + cellSize / 2;
+          const cy = startY + r * cellSize + cellSize / 2;
+          ctx.beginPath(); ctx.arc(cx, cy, cellSize * 0.72, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    }
   }
 
   const melt = state.simMode === 'ironed' ? state.ironIntensity : 0;
 
   for (let r = 0; r < p.height; r++) {
     for (let c = 0; c < p.width; c++) {
-      const entry = p.palette[p.grid[r][c]];
+      const palIdx = p.grid[r][c];
+      if (palIdx < 0) continue;
+      const entry = p.palette[palIdx];
       const seed = ((r * 73856093) ^ (c * 19349663)) & 0xffff;
       const jx = state.simMode === 'pegboard' ? ((((seed % 11) - 5) / 5) * cellSize * 0.022) : 0;
       const jy = state.simMode === 'pegboard' ? (((((seed / 11) | 0) % 11) - 5) / 5 * cellSize * 0.022) : 0;
@@ -883,35 +1160,25 @@ function drawSimulationCanvas() {
         const outerR = cellSize * 0.435;
         const holeR = cellSize * 0.165;
         ctx.fillStyle = 'rgba(0,0,0,0.20)';
-        ctx.beginPath();
-        ctx.arc(cx + cellSize * 0.04, cy + cellSize * 0.055, outerR, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(cx + cellSize * 0.04, cy + cellSize * 0.055, outerR, 0, Math.PI * 2); ctx.fill();
 
         const grad = ctx.createRadialGradient(cx - outerR * 0.25, cy - outerR * 0.25, outerR * 0.1, cx, cy, outerR * 1.2);
         grad.addColorStop(0, shadeHex(entry.rgb, 0.16));
         grad.addColorStop(0.55, entry.hex);
         grad.addColorStop(1, shadeHex(entry.rgb, -0.18));
         ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(cx, cy, outerR, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(cx, cy, outerR, 0, Math.PI * 2); ctx.fill();
 
         ctx.strokeStyle = 'rgba(255,255,255,0.28)';
         ctx.lineWidth = Math.max(1, cellSize * 0.06);
-        ctx.beginPath();
-        ctx.arc(cx - outerR * 0.06, cy - outerR * 0.06, outerR * 0.76, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx - outerR * 0.06, cy - outerR * 0.06, outerR * 0.76, 0, Math.PI * 2); ctx.stroke();
 
         ctx.fillStyle = state.showPins ? '#FDFBF7' : '#EBE3D7';
-        ctx.beginPath();
-        ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(cx, cy, holeR, 0, Math.PI * 2); ctx.fill();
 
         if (state.showPins) {
           ctx.fillStyle = '#D4CCC0';
-          ctx.beginPath();
-          ctx.arc(cx, cy, holeR * 0.56, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.beginPath(); ctx.arc(cx, cy, holeR * 0.56, 0, Math.PI * 2); ctx.fill();
         }
       } else {
         const beadSize = cellSize * (0.89 + 0.115 * melt);
@@ -922,16 +1189,12 @@ function drawSimulationCanvas() {
         grad.addColorStop(0.5, entry.hex);
         grad.addColorStop(1, shadeHex(entry.rgb, -0.14));
         ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.roundRect(cx - half, cy - half, beadSize, beadSize, cornerR);
-        ctx.fill();
+        ctx.beginPath(); ctx.roundRect(cx - half, cy - half, beadSize, beadSize, cornerR); ctx.fill();
 
         const holeR = cellSize * (0.16 * (1 - melt * 0.88));
         if (holeR > 1.2) {
           ctx.fillStyle = '#E7DFD4';
-          ctx.beginPath();
-          ctx.arc(cx, cy, holeR, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.beginPath(); ctx.arc(cx, cy, holeR, 0, Math.PI * 2); ctx.fill();
         }
       }
     }
@@ -962,7 +1225,7 @@ function renderMapExportCanvas(pattern) {
 
   ctx.fillStyle = '#1F1B17';
   ctx.font = '700 28px "Plus Jakarta Sans", sans-serif';
-  ctx.fillText(`Koralikowo • Mapa wzoru ${pattern.width} × ${pattern.height}`, pad, pad + 30);
+  ctx.fillText(`Koralikowo • ${shapeDisplayName(pattern.shape)} ${pattern.width} × ${pattern.height}`, pad, pad + 30);
   ctx.fillStyle = '#52473E';
   ctx.font = '500 18px "Plus Jakarta Sans", sans-serif';
   ctx.fillText(`Razem ${pattern.totalBeads} koralików • ${pattern.palette.length} kolorów`, pad, pad + 60);
@@ -980,7 +1243,9 @@ function renderMapExportCanvas(pattern) {
   ctx.font = `700 ${Math.max(11, cellPx * 0.45)}px "JetBrains Mono", monospace`;
   for (let r = 0; r < pattern.height; r++) {
     for (let c = 0; c < pattern.width; c++) {
-      const entry = pattern.palette[pattern.grid[r][c]];
+      const palIdx = pattern.grid[r][c];
+      if (palIdx < 0) continue;
+      const entry = pattern.palette[palIdx];
       const x = gx + c * cellPx;
       const y = gy + r * cellPx;
       ctx.fillStyle = entry.hex;
@@ -993,17 +1258,6 @@ function renderMapExportCanvas(pattern) {
     }
   }
 
-  ctx.strokeStyle = '#3E352E';
-  ctx.lineWidth = 2.5;
-  for (let c = 0; c <= pattern.width; c += 5) {
-    ctx.beginPath(); ctx.moveTo(gx + c * cellPx, gy); ctx.lineTo(gx + c * cellPx, gy + gridH); ctx.stroke();
-  }
-  for (let r = 0; r <= pattern.height; r += 5) {
-    ctx.beginPath(); ctx.moveTo(gx, gy + r * cellPx); ctx.lineTo(gx + gridW, gy + r * cellPx); ctx.stroke();
-  }
-  ctx.strokeRect(gx, gy, gridW, gridH);
-
-  // Legend
   const legendTop = gy + gridH + 30;
   const colW = (out.width - pad * 2) / legendCols;
   pattern.palette.forEach((entry, idx) => {
@@ -1012,12 +1266,8 @@ function renderMapExportCanvas(pattern) {
     const lx = pad + lc * colW;
     const ly = legendTop + lr * 42;
     ctx.fillStyle = entry.hex;
-    ctx.beginPath();
-    ctx.roundRect(lx, ly, 26, 26, 7);
-    ctx.fill();
-    ctx.strokeStyle = '#9E9184';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    ctx.beginPath(); ctx.roundRect(lx, ly, 26, 26, 7); ctx.fill();
+    ctx.strokeStyle = '#9E9184'; ctx.lineWidth = 1; ctx.stroke();
 
     ctx.textAlign = 'center';
     ctx.fillStyle = isDarkColor(entry.rgb) ? '#FFFFFF' : '#1F1B17';
@@ -1042,15 +1292,30 @@ function renderSimExportCanvas(pattern) {
   const ctx = out.getContext('2d');
   ctx.fillStyle = '#EFE9E0';
   ctx.fillRect(0, 0, out.width, out.height);
-  ctx.fillStyle = state.simMode === 'pegboard' ? '#FAF8F5' : '#F5EFE6';
-  ctx.beginPath();
-  ctx.roundRect(pad - 12, pad - 12, pattern.width * cellPx + 24, pattern.height * cellPx + 24, 18);
-  ctx.fill();
+
+  if (state.simMode === 'pegboard') {
+    const shape = pattern.shape || 'rect';
+    if (shape === 'rect' || shape === 'circle' || shape === 'oval') {
+      drawPegboardPlate(ctx, shape, pad, pad, pattern.width * cellPx, pattern.height * cellPx, 14);
+    } else {
+      ctx.fillStyle = '#FDFBF7';
+      for (let r = 0; r < pattern.height; r++) {
+        for (let c = 0; c < pattern.width; c++) {
+          if (pattern.grid[r][c] < 0) continue;
+          const cx = pad + c * cellPx + cellPx / 2;
+          const cy = pad + r * cellPx + cellPx / 2;
+          ctx.beginPath(); ctx.arc(cx, cy, cellPx * 0.72, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+    }
+  }
 
   const melt = state.simMode === 'ironed' ? state.ironIntensity : 0;
   for (let r = 0; r < pattern.height; r++) {
     for (let c = 0; c < pattern.width; c++) {
-      const entry = pattern.palette[pattern.grid[r][c]];
+      const palIdx = pattern.grid[r][c];
+      if (palIdx < 0) continue;
+      const entry = pattern.palette[palIdx];
       const cx = pad + c * cellPx + cellPx / 2;
       const cy = pad + r * cellPx + cellPx / 2;
       if (state.simMode === 'pegboard') {
@@ -1095,9 +1360,7 @@ function buildExportCanvas(pattern, content) {
 
 async function generateExportBlob(pattern, content, format) {
   if (format === 'pdf') {
-    if (!window.jspdf || !window.jspdf.jsPDF) {
-      throw new Error('PDF_UNAVAILABLE');
-    }
+    if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('PDF_UNAVAILABLE');
     const { jsPDF } = window.jspdf;
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
     const pw = pdf.internal.pageSize.getWidth();
@@ -1114,9 +1377,9 @@ async function generateExportBlob(pattern, content, format) {
       pdf.addImage(canvas.toDataURL('image/png'), 'PNG', (pw - dw) / 2, 54, dw, dh);
     };
     if (content === 'map') {
-      addCanvasPage(renderMapExportCanvas(pattern), `Koralikowo • Mapa wzoru (${pattern.width}×${pattern.height})`, true);
+      addCanvasPage(renderMapExportCanvas(pattern), `Koralikowo • ${shapeDisplayName(pattern.shape)} (${pattern.width}×${pattern.height})`, true);
     } else if (content === 'sim') {
-      addCanvasPage(renderSimExportCanvas(pattern), `Koralikowo • Symulacja koralików (${pattern.width}×${pattern.height})`, true);
+      addCanvasPage(renderSimExportCanvas(pattern), `Koralikowo • Symulacja (${pattern.width}×${pattern.height})`, true);
     } else {
       addCanvasPage(renderMapExportCanvas(pattern), `Koralikowo • Strona 1: Mapa wzoru i legenda`, true);
       addCanvasPage(renderSimExportCanvas(pattern), `Koralikowo • Strona 2: Podgląd ułożenia koralików`, false);
@@ -1140,26 +1403,33 @@ function showToast(msg) {
 }
 
 function updateDimensionControls() {
+  const isSym = SYMMETRIC_SHAPES.has(state.shape);
+  if (isSym && state.height !== state.width) {
+    state.height = state.width;
+  }
+
+  document.querySelectorAll('#boardShapes .shape-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.shape === state.shape);
+  });
+
+  document.getElementById('widthSliderLabel').textContent = isSym ? 'Rozmiar (średnica)' : 'Szerokość';
+  document.getElementById('heightBlock').classList.toggle('hidden', isSym);
+  document.getElementById('btnSwapDims').classList.toggle('hidden', isSym || state.width === state.height);
+
   document.getElementById('widthValue').textContent = state.width;
   document.getElementById('heightValue').textContent = state.height;
   document.getElementById('widthSlider').value = state.width;
   document.getElementById('heightSlider').value = state.height;
-  document.getElementById('totalPegsLabel').textContent = `Razem: ${state.width * state.height} miejsc (${state.width} × ${state.height})`;
+
+  const activeCount = countActiveCells(state.shape, state.width, state.height);
+  document.getElementById('totalPegsLabel').textContent = `Aktywnych pól: ${activeCount} (${shapeDisplayName(state.shape)} ${state.width}×${state.height})`;
 
   document.querySelectorAll('#boardPresets .chip').forEach((btn) => {
     const match = Number(btn.dataset.w) === state.width && Number(btn.dataset.h) === state.height;
     btn.classList.toggle('active', match);
   });
 
-  const ratioBox = document.getElementById('ratioPreviewRect');
-  const ratio = Math.max(0.35, Math.min(2.8, state.width / state.height));
-  if (ratio >= 1) {
-    ratioBox.style.width = '30px';
-    ratioBox.style.height = `${Math.round(30 / ratio)}px`;
-  } else {
-    ratioBox.style.height = '30px';
-    ratioBox.style.width = `${Math.round(30 * ratio)}px`;
-  }
+  drawShapePreview();
 }
 
 function renderManualPaletteGrid() {
@@ -1189,6 +1459,49 @@ function renderManualPaletteGrid() {
   document.getElementById('manualCountBadge').textContent = state.manualCodes.size;
 }
 
+function renderSavedImagesGallery() {
+  const wrap = document.getElementById('savedGalleryWrap');
+  const strip = document.getElementById('savedImagesStrip');
+  if (!state.savedImages.length) {
+    wrap.classList.add('hidden');
+    strip.innerHTML = '';
+    return;
+  }
+  wrap.classList.remove('hidden');
+  strip.innerHTML = '';
+  state.savedImages.forEach((item) => {
+    const card = document.createElement('div');
+    card.className = `saved-img-card ${state.activeSavedImageId === item.id ? 'active' : ''}`;
+    card.innerHTML = `
+      <img src="${item.dataUrl}" alt="${item.name}" />
+      <span class="saved-img-name">${item.name}</span>
+      <button type="button" class="saved-img-del" title="Usuń z pamięci">✕</button>
+    `;
+    card.addEventListener('click', async (e) => {
+      if (e.target.closest('.saved-img-del')) {
+        await idbDeleteImage(item.id);
+        state.savedImages = state.savedImages.filter((x) => x.id !== item.id);
+        if (state.activeSavedImageId === item.id) state.activeSavedImageId = null;
+        renderSavedImagesGallery();
+        persistSessionToLocalStorage();
+        showToast('Usunięto obraz z pamięci przeglądarki.');
+        return;
+      }
+      state.sourceCanvas = await canvasFromDataUrl(item.dataUrl);
+      state.sourceName = item.name;
+      state.sourceSampleId = null;
+      state.activeSavedImageId = item.id;
+      document.getElementById('selectedFileName').textContent = item.name;
+      document.getElementById('sampleFoxBtn').classList.remove('active');
+      document.getElementById('sampleRocketBtn').classList.remove('active');
+      updateSourceThumb();
+      renderSavedImagesGallery();
+      generatePattern();
+    });
+    strip.appendChild(card);
+  });
+}
+
 function updateSourceThumb() {
   if (!state.sourceCanvas) return;
   const thumb = document.getElementById('sourceThumbCanvas');
@@ -1211,14 +1524,13 @@ function updateSourceThumb() {
 function refreshWorkspaceUI() {
   const p = state.pattern;
   if (!p) return;
-  document.getElementById('patternTitle').textContent = `Wzór ${p.width} × ${p.height}`;
+  document.getElementById('patternTitle').textContent = `${shapeDisplayName(p.shape || 'rect')} ${p.width} × ${p.height}`;
   document.getElementById('patternStats').textContent = `${p.totalBeads} koralików • ${p.palette.length} kolorów`;
   document.getElementById('btnUndoReplace').classList.toggle('hidden', !state.undoPattern);
   document.getElementById('placedCounter').textContent = state.placedCells.size;
   document.getElementById('btnClearPlaced').classList.toggle('hidden', state.placedCells.size === 0);
   document.getElementById('btnClearHighlight').classList.toggle('hidden', state.highlightedIndex === null);
 
-  // Selected cell banner
   const banner = document.getElementById('selectedCellBanner');
   if (state.selectedCell && p.palette[state.selectedCell.paletteIndex]) {
     const entry = p.palette[state.selectedCell.paletteIndex];
@@ -1232,7 +1544,6 @@ function refreshWorkspaceUI() {
     banner.classList.add('hidden');
   }
 
-  // Palette highlight strip
   const strip = document.getElementById('paletteStrip');
   strip.innerHTML = '';
   p.palette.forEach((entry, idx) => {
@@ -1247,12 +1558,11 @@ function refreshWorkspaceUI() {
     strip.appendChild(btn);
   });
 
-  // Legend tab
   document.getElementById('legendTotalCount').textContent = `${p.totalBeads} szt.`;
   const list = document.getElementById('legendList');
   list.innerHTML = '';
   p.palette.forEach((entry, idx) => {
-    const pct = Math.round((entry.count / p.totalBeads) * 100);
+    const pct = Math.round((entry.count / Math.max(1, p.totalBeads)) * 100);
     const row = document.createElement('div');
     row.className = `legend-item ${state.highlightedIndex === idx ? 'active' : ''}`;
     row.innerHTML = `
@@ -1296,7 +1606,6 @@ function switchTab(tab) {
 function openReplaceModal(paletteIdx) {
   const p = state.pattern;
   if (!p || !p.palette[paletteIdx]) return;
-  state.replaceTargetIdx = paletteIdx;
   const src = p.palette[paletteIdx];
   document.getElementById('replaceSourceInfo').textContent = `Obecny: #${src.number} ${src.name} (${src.code} • ${src.count} szt.)`;
   const grid = document.getElementById('replacePaletteGrid');
@@ -1321,9 +1630,7 @@ function openReplaceModal(paletteIdx) {
 
 function setupCanvasInteractions(canvasId, viewKey, onTapCallback) {
   const canvas = document.getElementById(canvasId);
-  let dragging = false;
-  let moved = false;
-  let lastX = 0, lastY = 0;
+  let dragging = false, moved = false, lastX = 0, lastY = 0;
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
@@ -1347,17 +1654,13 @@ function setupCanvasInteractions(canvasId, viewKey, onTapCallback) {
   }, { passive: false });
 
   canvas.addEventListener('pointerdown', (e) => {
-    dragging = true;
-    moved = false;
-    lastX = e.clientX;
-    lastY = e.clientY;
+    dragging = true; moved = false; lastX = e.clientX; lastY = e.clientY;
     canvas.setPointerCapture(e.pointerId);
   });
 
   canvas.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
     const dpr = window.devicePixelRatio || 1;
     if (state[viewKey].scale > 1.02) {
@@ -1366,8 +1669,7 @@ function setupCanvasInteractions(canvasId, viewKey, onTapCallback) {
       drawMapCanvas();
       drawSimulationCanvas();
     }
-    lastX = e.clientX;
-    lastY = e.clientY;
+    lastX = e.clientX; lastY = e.clientY;
   });
 
   canvas.addEventListener('pointerup', (e) => {
@@ -1380,23 +1682,89 @@ function setupCanvasInteractions(canvasId, viewKey, onTapCallback) {
   });
 }
 
-// --- Initialization & Event Listeners ---
+// --- Initialization & Session Restore ---
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  // Load saved uploaded images from IndexedDB
+  state.savedImages = await idbGetAllImages();
+
+  // Restore saved session settings/pattern if present
+  const savedSession = loadSessionFromLocalStorage();
+  if (savedSession) {
+    state.shape = savedSession.shape || 'rect';
+    state.width = savedSession.width || 15;
+    state.height = savedSession.height || 15;
+    state.colorCount = savedSession.colorCount || 8;
+    state.snapToPalette = savedSession.snapToPalette !== undefined ? savedSession.snapToPalette : true;
+    state.paletteMode = savedSession.paletteMode || 'auto';
+    if (Array.isArray(savedSession.manualCodes)) state.manualCodes = new Set(savedSession.manualCodes);
+    state.shadeTolerance = savedSession.shadeTolerance !== undefined ? savedSession.shadeTolerance : 10;
+    state.cropMode = savedSession.cropMode || 'fill';
+    state.sourceName = savedSession.sourceName || 'Przykład: Lisek';
+    state.sourceSampleId = savedSession.sourceSampleId !== undefined ? savedSession.sourceSampleId : 'fox';
+    state.activeSavedImageId = savedSession.activeSavedImageId || null;
+    if (Array.isArray(savedSession.placedCells)) state.placedCells = new Set(savedSession.placedCells);
+    state.simMode = savedSession.simMode || 'pegboard';
+    state.ironIntensity = savedSession.ironIntensity || 0.65;
+    if (savedSession.pattern) state.pattern = savedSession.pattern;
+  }
+
+  // Sync UI controls to restored state
   updateDimensionControls();
   renderManualPaletteGrid();
+  renderSavedImagesGallery();
+
+  document.getElementById('selectedFileName').textContent = state.sourceName;
+  document.getElementById('colorCountSlider').value = state.colorCount;
+  document.getElementById('colorCountBadge').textContent = `${state.colorCount} kolorów`;
+  document.querySelectorAll('#colorCountChips .chip').forEach((c) => c.classList.toggle('active', Number(c.dataset.colors) === state.colorCount));
+  document.getElementById('snapPaletteCheck').checked = state.snapToPalette;
+  document.getElementById('toleranceSlider').value = state.shadeTolerance;
+  const tv = state.shadeTolerance;
+  document.getElementById('toleranceBadge').textContent = tv === 0 ? 'Wył. (0)' : tv <= 12 ? `Łagodna (${tv})` : tv <= 24 ? `Średnia (${tv})` : `Silna (${tv})`;
+
+  document.querySelectorAll('#cropModeGroup .seg-btn').forEach((x) => x.classList.toggle('active', x.dataset.crop === state.cropMode));
+  document.querySelectorAll('#paletteModeGroup .seg-btn').forEach((x) => x.classList.toggle('active', x.dataset.pmode === state.paletteMode));
+  document.getElementById('autoPaletteSection').classList.toggle('hidden', state.paletteMode !== 'auto');
+  document.getElementById('manualPaletteSection').classList.toggle('hidden', state.paletteMode !== 'manual');
+  document.querySelectorAll('#simModeGroup .seg-btn').forEach((x) => x.classList.toggle('active', x.dataset.sim === state.simMode));
+  document.getElementById('simPegsControl').classList.toggle('hidden', state.simMode !== 'pegboard');
+  document.getElementById('simIronControl').classList.toggle('hidden', state.simMode !== 'ironed');
+  const ironPct = Math.round(state.ironIntensity * 100);
+  document.getElementById('ironSlider').value = ironPct;
+  document.getElementById('ironBadge').textContent = `${ironPct}%`;
+
+  // Shape selector listeners
+  document.querySelectorAll('#boardShapes .shape-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.shape = btn.dataset.shape;
+      if (SYMMETRIC_SHAPES.has(state.shape)) {
+        state.height = state.width;
+      }
+      updateDimensionControls();
+      persistSessionToLocalStorage();
+    });
+  });
 
   // Board presets & steppers
   document.querySelectorAll('#boardPresets .chip').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.width = Number(btn.dataset.w);
-      state.height = Number(btn.dataset.h);
+      state.height = SYMMETRIC_SHAPES.has(state.shape) ? state.width : Number(btn.dataset.h);
       updateDimensionControls();
+      persistSessionToLocalStorage();
     });
   });
 
-  const setW = (v) => { state.width = Math.max(3, Math.min(60, v)); updateDimensionControls(); };
-  const setH = (v) => { state.height = Math.max(3, Math.min(60, v)); updateDimensionControls(); };
+  const setW = (v) => {
+    state.width = Math.max(5, Math.min(60, v));
+    if (SYMMETRIC_SHAPES.has(state.shape)) state.height = state.width;
+    updateDimensionControls();
+  };
+  const setH = (v) => {
+    state.height = Math.max(5, Math.min(60, v));
+    updateDimensionControls();
+  };
   document.getElementById('widthMinus').addEventListener('click', () => setW(state.width - 1));
   document.getElementById('widthPlus').addEventListener('click', () => setW(state.width + 1));
   document.getElementById('widthSlider').addEventListener('input', (e) => setW(Number(e.target.value)));
@@ -1408,37 +1776,63 @@ window.addEventListener('DOMContentLoaded', () => {
     updateDimensionControls();
   });
 
-  // Image upload & built-in samples
+  // Image upload -> Persist to IndexedDB automatically
   document.getElementById('imageFileInput').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const img = new Image();
-    img.onload = () => {
+    img.onload = async () => {
       const c = document.createElement('canvas');
       const maxDim = 800;
       const s = Math.min(1, maxDim / Math.max(img.width, img.height));
       c.width = Math.max(1, Math.round(img.width * s));
       c.height = Math.max(1, Math.round(img.height * s));
       c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+
+      const dataUrl = c.toDataURL('image/png');
+      const record = {
+        id: `img_${Date.now()}`,
+        name: file.name,
+        dataUrl,
+        savedAt: Date.now(),
+      };
+      await idbPutImage(record);
+      state.savedImages = [record, ...state.savedImages].slice(0, 12);
+      state.activeSavedImageId = record.id;
       state.sourceCanvas = c;
       state.sourceName = file.name;
+      state.sourceSampleId = null;
       document.getElementById('selectedFileName').textContent = file.name;
       document.getElementById('sampleFoxBtn').classList.remove('active');
       document.getElementById('sampleRocketBtn').classList.remove('active');
       updateSourceThumb();
+      renderSavedImagesGallery();
       generatePattern();
+      showToast('Zapisano obraz w pamięci przeglądarki.');
     };
     img.src = URL.createObjectURL(file);
   });
 
-  const loadSample = (kind, label) => {
+  document.getElementById('btnClearSavedImages').addEventListener('click', async () => {
+    await idbClearImages();
+    state.savedImages = [];
+    state.activeSavedImageId = null;
+    renderSavedImagesGallery();
+    persistSessionToLocalStorage();
+    showToast('Wyczyszczono zapisane obrazy.');
+  });
+
+  const loadSample = (kind, label, skipGenerate = false) => {
     state.sourceCanvas = createSampleCanvas(kind);
     state.sourceName = label;
+    state.sourceSampleId = kind;
+    state.activeSavedImageId = null;
     document.getElementById('selectedFileName').textContent = label;
     document.getElementById('sampleFoxBtn').classList.toggle('active', kind === 'fox');
     document.getElementById('sampleRocketBtn').classList.toggle('active', kind === 'rocket');
     updateSourceThumb();
-    generatePattern();
+    renderSavedImagesGallery();
+    if (!skipGenerate) generatePattern();
   };
   document.getElementById('sampleFoxBtn').addEventListener('click', () => loadSample('fox', 'Przykład: Lisek'));
   document.getElementById('sampleRocketBtn').addEventListener('click', () => loadSample('rocket', 'Przykład: Rakieta'));
@@ -1501,6 +1895,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('btnClearPlaced').addEventListener('click', () => {
     state.placedCells.clear();
+    persistSessionToLocalStorage();
     refreshWorkspaceUI();
   });
   document.getElementById('btnClearHighlight').addEventListener('click', () => {
@@ -1522,6 +1917,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (!state.undoPattern) return;
     state.pattern = state.undoPattern;
     state.undoPattern = null;
+    persistSessionToLocalStorage();
     refreshWorkspaceUI();
     showToast('Cofnięto zamianę koloru.');
   });
@@ -1538,6 +1934,7 @@ window.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('#simModeGroup .seg-btn').forEach((x) => x.classList.toggle('active', x === b));
       document.getElementById('simPegsControl').classList.toggle('hidden', state.simMode !== 'pegboard');
       document.getElementById('simIronControl').classList.toggle('hidden', state.simMode !== 'ironed');
+      persistSessionToLocalStorage();
       drawSimulationCanvas();
     });
   });
@@ -1549,10 +1946,11 @@ window.addEventListener('DOMContentLoaded', () => {
     const v = Number(e.target.value);
     state.ironIntensity = v / 100;
     document.getElementById('ironBadge').textContent = `${v}%`;
+    persistSessionToLocalStorage();
     drawSimulationCanvas();
   });
 
-  // Canvas interactions (tap cell + pan/zoom)
+  // Canvas interactions (ignore inactive cells outside shape)
   setupCanvasInteractions('mapCanvas', 'mapView', (px, py, cw, ch) => {
     const p = state.pattern;
     if (!p) return;
@@ -1561,12 +1959,13 @@ window.addEventListener('DOMContentLoaded', () => {
     const uy = (py - state.mapView.panY) / state.mapView.scale;
     const col = Math.floor((ux - geom.originX) / geom.cellSize);
     const row = Math.floor((uy - geom.originY) / geom.cellSize);
-    if (row >= 0 && row < p.height && col >= 0 && col < p.width) {
+    if (row >= 0 && row < p.height && col >= 0 && col < p.width && p.grid[row][col] >= 0) {
       state.selectedCell = { row, col, paletteIndex: p.grid[row][col] };
       if (state.placementMode) {
         const key = `${row},${col}`;
         if (state.placedCells.has(key)) state.placedCells.delete(key);
         else state.placedCells.add(key);
+        persistSessionToLocalStorage();
       }
       refreshWorkspaceUI();
     }
@@ -1603,19 +2002,19 @@ window.addEventListener('DOMContentLoaded', () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `koralikowo_${state.pattern.width}x${state.pattern.height}.${state.exportFormat}`;
+      a.download = `koralikowo_${state.pattern.shape || 'rect'}_${state.pattern.width}x${state.pattern.height}.${state.exportFormat}`;
       a.click();
       URL.revokeObjectURL(url);
       showToast(`Pobrano plik ${state.exportFormat.toUpperCase()}`);
     } catch {
-      showToast('Nie udało się wygenerować PDF (sprawdź połączenie z CDN).');
+      showToast('Nie udało się wygenerować PDF.');
     }
   });
 
   document.getElementById('btnShareExport').addEventListener('click', async () => {
     try {
       const blob = await generateExportBlob(state.pattern, state.exportContent, state.exportFormat);
-      const filename = `koralikowo_${state.pattern.width}x${state.pattern.height}.${state.exportFormat}`;
+      const filename = `koralikowo_${state.pattern.shape || 'rect'}_${state.pattern.width}x${state.pattern.height}.${state.exportFormat}`;
       const file = new File([blob], filename, { type: blob.type });
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({
@@ -1630,11 +2029,9 @@ window.addEventListener('DOMContentLoaded', () => {
         a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
-        showToast('Twoja przeglądarka pobrała plik — możesz go wysłać ręcznie.');
+        showToast('Pobrano plik — możesz go udostępnić ręcznie.');
       }
-    } catch {
-      // cancelled share
-    }
+    } catch {}
   });
 
   document.getElementById('btnCopyLink').addEventListener('click', async () => {
@@ -1648,7 +2045,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (navigator.share) {
       await navigator.share({
         title: `Wzór Koralikowo ${state.pattern.width}×${state.pattern.height}`,
-        text: `Zobacz mój wzór do koralików do prasowania:`,
+        text: 'Zobacz mój wzór do koralików do prasowania:',
         url: link,
       }).catch(() => {});
     } else {
@@ -1674,12 +2071,14 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
     state.pattern = decoded;
+    state.shape = decoded.shape || 'rect';
     state.width = decoded.width;
     state.height = decoded.height;
     updateDimensionControls();
+    persistSessionToLocalStorage();
     refreshWorkspaceUI();
     closeImport();
-    showToast(`Wczytano wzór (${decoded.width}×${decoded.height})`);
+    showToast(`Wczytano wzór (${shapeDisplayName(state.shape)} ${decoded.width}×${decoded.height})`);
   });
 
   window.addEventListener('resize', () => {
@@ -1687,13 +2086,14 @@ window.addEventListener('DOMContentLoaded', () => {
     drawSimulationCanvas();
   });
 
-  // Load from URL hash if shared link was opened directly, otherwise load sample Fox
+  // 1) Shared hash link takes priority
   if (window.location.hash && window.location.hash.includes('p=')) {
     const decoded = decodePatternFromHash(window.location.hash);
     if (decoded) {
       state.sourceCanvas = createSampleCanvas('fox');
       updateSourceThumb();
       state.pattern = decoded;
+      state.shape = decoded.shape || 'rect';
       state.width = decoded.width;
       state.height = decoded.height;
       updateDimensionControls();
@@ -1702,5 +2102,28 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
   }
-  loadSample('fox', 'Przykład: Lisek');
+
+  // 2) Restore saved uploaded image or sample + existing pattern from session
+  if (state.activeSavedImageId) {
+    const match = state.savedImages.find((img) => img.id === state.activeSavedImageId);
+    if (match) {
+      state.sourceCanvas = await canvasFromDataUrl(match.dataUrl);
+      updateSourceThumb();
+      if (state.pattern) {
+        refreshWorkspaceUI();
+      } else {
+        generatePattern();
+      }
+      return;
+    }
+  }
+
+  const sampleKind = state.sourceSampleId === 'rocket' ? 'rocket' : 'fox';
+  const sampleLabel = sampleKind === 'rocket' ? 'Przykład: Rakieta' : 'Przykład: Lisek';
+  if (state.pattern) {
+    loadSample(sampleKind, sampleLabel, true);
+    refreshWorkspaceUI();
+  } else {
+    loadSample(sampleKind, sampleLabel, false);
+  }
 });
